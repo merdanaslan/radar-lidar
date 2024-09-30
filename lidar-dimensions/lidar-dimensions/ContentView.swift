@@ -10,6 +10,10 @@ class ARViewModel: ObservableObject {
     var startPoint: SIMD3<Float>?
     var endPoint: SIMD3<Float>?
     var measurementLine: Entity?
+    var spheres: [Entity] = []
+    
+    let sphereRadius: Float = 0.003 // Smaller sphere size
+    let lineWidth: Float = 0.0005 // Thinner line
     
     func setupARView() {
         guard let arView = arView else { return }
@@ -28,22 +32,34 @@ class ARViewModel: ObservableObject {
         
         if startPoint == nil {
             startPoint = position
-            addSphere(at: position, color: .green)
+            addSphere(at: position)
+            addDebugSphere(at: position, color: .green)
             measurementStatus = "Tap to set end point"
         } else if endPoint == nil {
             endPoint = position
-            addSphere(at: position, color: .red)
+            addSphere(at: position)
+            addDebugSphere(at: position, color: .red)
             updateMeasurement()
         } else {
             resetMeasurement()
         }
     }
     
-    func addSphere(at position: SIMD3<Float>, color: UIColor) {
-        let sphere = ModelEntity(mesh: .generateSphere(radius: 0.005), materials: [SimpleMaterial(color: color, isMetallic: false)])
+    func addDebugSphere(at position: SIMD3<Float>, color: UIColor) {
+        let sphere = ModelEntity(mesh: .generateSphere(radius: 0.002),
+                                 materials: [SimpleMaterial(color: color, isMetallic: false)])
         let anchorEntity = AnchorEntity(world: position)
         anchorEntity.addChild(sphere)
         arView?.scene.addAnchor(anchorEntity)
+    }
+
+    func addSphere(at position: SIMD3<Float>) {
+        let sphere = ModelEntity(mesh: .generateSphere(radius: 0.005),
+                                 materials: [SimpleMaterial(color: .white, isMetallic: false)])
+        let anchorEntity = AnchorEntity(world: position)
+        anchorEntity.addChild(sphere)
+        arView?.scene.addAnchor(anchorEntity)
+        spheres.append(sphere)
     }
 
     func updateMeasurement() {
@@ -56,24 +72,36 @@ class ARViewModel: ObservableObject {
         measurementLine?.removeFromParent()
         
         let length = simd_distance(start, end)
-        let lineMesh = MeshResource.generateBox(size: SIMD3(length, 0.001, 0.001))
-        let lineMaterial = SimpleMaterial(color: .yellow, isMetallic: false)
-        let lineEntity = ModelEntity(mesh: lineMesh, materials: [lineMaterial])
-        
-        let midPoint = (start + end) / 2
-        lineEntity.position = midPoint
-        
         let direction = simd_normalize(end - start)
-        let rotationAxis = simd_cross([1, 0, 0], direction)
-        let rotationAngle = acos(simd_dot([1, 0, 0], direction))
-        let rotation = simd_quaternion(rotationAngle, rotationAxis)
-        lineEntity.orientation = rotation
+        
+        let dashedLine = Entity()
+        let dashLength: Float = 0.02
+        let gapLength: Float = 0.01
+        let dashCount = Int(length / (dashLength + gapLength))
+        
+        for i in 0..<dashCount {
+            let dashStart = start + direction * Float(i) * (dashLength + gapLength)
+            let dashEnd = dashStart + direction * dashLength
+            
+            let dashMesh = MeshResource.generateBox(size: SIMD3(dashLength, 0.001, 0.001))
+            let dashMaterial = SimpleMaterial(color: .white, isMetallic: false)
+            let dashEntity = ModelEntity(mesh: dashMesh, materials: [dashMaterial])
+            
+            dashEntity.position = (dashStart + dashEnd) / 2
+            
+            let dashDirection = simd_normalize(dashEnd - dashStart)
+            let rotationAxis = simd_cross([1, 0, 0], dashDirection)
+            let rotationAngle = acos(simd_dot([1, 0, 0], dashDirection))
+            dashEntity.orientation = simd_quaternion(rotationAngle, rotationAxis)
+            
+            dashedLine.addChild(dashEntity)
+        }
         
         let anchorEntity = AnchorEntity(world: .zero)
-        anchorEntity.addChild(lineEntity)
+        anchorEntity.addChild(dashedLine)
         arView?.scene.addAnchor(anchorEntity)
         
-        measurementLine = lineEntity
+        measurementLine = dashedLine
     }
 
     func resetMeasurement() {
@@ -81,6 +109,10 @@ class ARViewModel: ObservableObject {
         endPoint = nil
         measurementLine?.removeFromParent()
         measurementLine = nil
+        for sphere in spheres {
+            sphere.removeFromParent()
+        }
+        spheres.removeAll()
         arView?.scene.anchors.removeAll()
         measurementStatus = "Tap to set start point"
         distance = nil
@@ -138,7 +170,7 @@ struct ContentView: View {
             
             Image(systemName: "plus")
                 .font(.system(size: 50))
-                .foregroundColor(.yellow)
+                .foregroundColor(.white)
         }
     }
 }
