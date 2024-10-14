@@ -10,10 +10,7 @@ class ARViewModel: ObservableObject {
     var startPoint: SIMD3<Float>?
     var endPoint: SIMD3<Float>?
     var measurementLine: Entity?
-    var spheres: [Entity] = []
-    
-    let sphereRadius: Float = 0.003 // Smaller sphere size
-    let lineWidth: Float = 0.0005 // Thinner line
+    var pointMarkers: [Entity] = []
     
     func setupARView() {
         guard let arView = arView else { return }
@@ -22,86 +19,71 @@ class ARViewModel: ObservableObject {
         arView.session.run(config)
     }
     
-    func handleTap() {
-        guard let arView = arView,
-              let raycastResult = arView.raycast(from: arView.center, allowing: .estimatedPlane, alignment: .any).first
-        else { return }
+    func handleTap(at screenPoint: CGPoint) {
+        guard let arView = arView else { return }
         
-        let worldTransform = raycastResult.worldTransform
-        let position = SIMD3(worldTransform.columns.3.x, worldTransform.columns.3.y, worldTransform.columns.3.z)
-        
-        if startPoint == nil {
-            startPoint = position
-            addSphere(at: position)
-            addDebugSphere(at: position, color: .green)
-            measurementStatus = "Tap to set end point"
-        } else if endPoint == nil {
-            endPoint = position
-            addSphere(at: position)
-            addDebugSphere(at: position, color: .red)
-            updateMeasurement()
+        if let query = arView.makeRaycastQuery(from: screenPoint, allowing: .estimatedPlane, alignment: .any) {
+            if let result = arView.session.raycast(query).first {
+                let worldPosition = result.worldTransform.columns.3
+                let position = SIMD3(worldPosition.x, worldPosition.y, worldPosition.z)
+                
+                if startPoint == nil {
+                    startPoint = position
+                    addPointMarker(at: position)
+                    measurementStatus = "Tap to set end point"
+                } else if endPoint == nil {
+                    endPoint = position
+                    addPointMarker(at: position)
+                    updateMeasurement()
+                } else {
+                    resetMeasurement()
+                }
+            }
         } else {
-            resetMeasurement()
+            print("Unable to create raycast query")
         }
     }
-    
-    func addDebugSphere(at position: SIMD3<Float>, color: UIColor) {
-        let sphere = ModelEntity(mesh: .generateSphere(radius: 0.002),
-                                 materials: [SimpleMaterial(color: color, isMetallic: false)])
-        let anchorEntity = AnchorEntity(world: position)
-        anchorEntity.addChild(sphere)
-        arView?.scene.addAnchor(anchorEntity)
-    }
 
-    func addSphere(at position: SIMD3<Float>) {
-        let sphere = ModelEntity(mesh: .generateSphere(radius: 0.005),
-                                 materials: [SimpleMaterial(color: .white, isMetallic: false)])
+    func addPointMarker(at position: SIMD3<Float>) {
+        let sphere = ModelEntity(mesh: .generateSphere(radius: 0.01),
+                                 materials: [SimpleMaterial(color: .red, isMetallic: false)])
+        sphere.position = position
+        
         let anchorEntity = AnchorEntity(world: position)
         anchorEntity.addChild(sphere)
         arView?.scene.addAnchor(anchorEntity)
-        spheres.append(sphere)
+        
+        pointMarkers.append(sphere)
     }
 
     func updateMeasurement() {
         guard let start = startPoint, let end = endPoint else { return }
         distance = simd_distance(start, end)
         drawLine(from: start, to: end)
+        measurementStatus = String(format: "%.2f cm", (distance ?? 0) * 100)
     }
 
     func drawLine(from start: SIMD3<Float>, to end: SIMD3<Float>) {
         measurementLine?.removeFromParent()
         
-        let length = simd_distance(start, end)
+        let distance = simd_distance(start, end)
+        let midPoint = (start + end) / 2
+        
+        let lineMesh = MeshResource.generateBox(size: SIMD3(distance, 0.002, 0.002))
+        let lineMaterial = SimpleMaterial(color: .blue, isMetallic: false)
+        let lineEntity = ModelEntity(mesh: lineMesh, materials: [lineMaterial])
+        
+        lineEntity.position = midPoint
+        
         let direction = simd_normalize(end - start)
+        let rotation = simd_quatf(from: [1, 0, 0], to: direction)
+        lineEntity.orientation = rotation
         
-        let dashedLine = Entity()
-        let dashLength: Float = 0.02
-        let gapLength: Float = 0.01
-        let dashCount = Int(length / (dashLength + gapLength))
-        
-        for i in 0..<dashCount {
-            let dashStart = start + direction * Float(i) * (dashLength + gapLength)
-            let dashEnd = dashStart + direction * dashLength
-            
-            let dashMesh = MeshResource.generateBox(size: SIMD3(dashLength, 0.001, 0.001))
-            let dashMaterial = SimpleMaterial(color: .white, isMetallic: false)
-            let dashEntity = ModelEntity(mesh: dashMesh, materials: [dashMaterial])
-            
-            dashEntity.position = (dashStart + dashEnd) / 2
-            
-            let dashDirection = simd_normalize(dashEnd - dashStart)
-            let rotationAxis = simd_cross([1, 0, 0], dashDirection)
-            let rotationAngle = acos(simd_dot([1, 0, 0], dashDirection))
-            dashEntity.orientation = simd_quaternion(rotationAngle, rotationAxis)
-            
-            dashedLine.addChild(dashEntity)
-        }
-        
-        let anchorEntity = AnchorEntity(world: .zero)
-        anchorEntity.addChild(dashedLine)
+        let anchorEntity = AnchorEntity(world: midPoint)
+        anchorEntity.addChild(lineEntity)
         arView?.scene.addAnchor(anchorEntity)
         
-        measurementLine = dashedLine
+        measurementLine = lineEntity
     }
 
     func resetMeasurement() {
@@ -109,10 +91,10 @@ class ARViewModel: ObservableObject {
         endPoint = nil
         measurementLine?.removeFromParent()
         measurementLine = nil
-        for sphere in spheres {
-            sphere.removeFromParent()
+        for marker in pointMarkers {
+            marker.removeFromParent()
         }
-        spheres.removeAll()
+        pointMarkers.removeAll()
         arView?.scene.anchors.removeAll()
         measurementStatus = "Tap to set start point"
         distance = nil
@@ -140,37 +122,34 @@ struct ContentView: View {
             ARViewContainer(viewModel: viewModel)
                 .edgesIgnoringSafeArea(.all)
             
+            // Crosshair
+            Image(systemName: "plus")
+                .font(.system(size: 40))
+                .foregroundColor(.white)
+            
+            // Measurement display and reset button
             VStack {
                 Spacer()
-                if let distance = viewModel.distance {
-                    Text(String(format: "Distance: %.2f cm", distance * 100))
-                        .padding()
-                        .background(Color.black.opacity(0.7))
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                } else {
-                    Text(viewModel.measurementStatus)
-                        .padding()
-                        .background(Color.black.opacity(0.7))
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                }
+                Text(viewModel.measurementStatus)
+                    .padding()
+                    .background(Color.black.opacity(0.7))
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
                 
-                Button(action: {
-                    viewModel.handleTap()
-                }) {
-                    Text("Set Point")
+                Button(action: viewModel.resetMeasurement) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.title)
                         .padding()
-                        .background(Color.blue)
+                        .background(Color.black.opacity(0.7))
                         .foregroundColor(.white)
-                        .cornerRadius(10)
+                        .clipShape(Circle())
                 }
-                .padding(.bottom, 50)
             }
-            
-            Image(systemName: "plus")
-                .font(.system(size: 50))
-                .foregroundColor(.white)
+            .padding()
+        }
+        .onTapGesture { location in
+            viewModel.handleTap(at: location)
         }
     }
 }
+
